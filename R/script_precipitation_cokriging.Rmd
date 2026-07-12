@@ -1,0 +1,645 @@
+---
+title: ""
+subtitle: "Co-kriging prediction using the gstat library"
+output: html_document
+header-includes:
+   - \usepackage{setspace}
+---
+
+#### Install packages.
+
+```{r message=FALSE, warning=FALSE}
+
+install.packages("raster")
+install.packages("classInt")
+install.packages("RColorBrewer")
+install.packages("gstat")
+install.packages("sf")
+
+```
+
+
+#### Load packages.
+
+```{r message=FALSE, warning=FALSE}
+
+library(raster)
+library(classInt)
+library(RColorBrewer)
+library(gstat)
+library("sf")
+library(ggplot2)
+
+```
+
+#### Set working directory
+
+Note that in R the bar of a path is /, while in Windows it is the counterbar.
+
+```{r message=FALSE, warning=FALSE, eval=TRUE, echo=TRUE}
+
+setwd("../Solucion")
+
+```
+
+
+#### Loading the observations
+
+Loading the shape point file which contains the observed data.
+
+```{r message=FALSE, warning=FALSE}
+
+dat <- read_sf("Datos_cp4/precip_seasonal.shp")
+
+#autumn and winter average
+dat$autum_winter <-(dat$autumn + dat$winter)/2
+
+#Transform it into a sf object
+dat_sf <- st_as_sf(dat)
+dat <- dat_sf
+plot(dat[,12:18])
+
+```
+
+#### Loading the Valencian Community (VC) administrative boundaries
+
+Loading the shape polygons file which contains the border of the Valencian Community.
+
+
+```{r fig.height=7, fig.width=7, message=FALSE, warning=FALSE}
+
+lim_cv <- read_sf("Datos_cp4/cv.shp")
+str(lim_cv)
+
+ggplot(lim_cv) +
+  geom_sf(fill = "lightblue", color = "darkblue", linewidth = 0.3) +
+  theme_minimal() +
+  labs(title = "Comunidad Valenciana") +
+  theme(plot.title = element_text(face = "bold", size = 12),
+        axis.text = element_text(size = 5)
+)
+
+```
+
+#### Loading the raster file with the Digital Elevation Model (DEM)
+
+Reading the raster file which contains DEM.
+
+```{r fig.height=7, fig.width=7, message=FALSE, warning=FALSE}
+
+ras <- raster("Datos_cp4/mde_100.tif", layer=0, values=TRUE)
+str(ras)
+
+slope <- terrain(ras, opt = "slope")
+aspect <- terrain(ras, opt = "aspect")
+hill <- hillShade(slope,
+                  aspect,
+                  angle = 45,
+                  direction = 315)
+
+par(bty = "n")
+plot(hill, 
+     col= grey(0:100/100),
+     legend= FALSE,
+     axes= FALSE,
+     main= "MDT with hillshade", 
+     cex.main= 1)
+
+plot(ras,
+     col= rev(terrain.colors(100, alpha = 0.5)),
+     add= TRUE,
+     axis.args= list(cex.axis = 0.7))
+
+```
+
+#**************************************************************************************************************
+#### Obtaining the predicting locations
+#**************************************************************************************************************
+
+In order to obtain a continuous map of precipitation, we need to make punctual predictions in a dense grid of locations.
+First of all, the spatial resolution of the raster object can be reduced.
+Finally, the grid of points will be clipped by the border of CV.
+
+1. Reducing the spatial resolution of the raster. Reduction factor=1/16.
+
+```{r message=FALSE, warning=FALSE}
+
+ras <- aggregate(ras, fact=c(4,4), fun=mean)
+str(ras)
+
+```
+
+2. Converting the raster to a SpatialPoints, thus obtaing the grid of predicting points, stored in the new object 'loc'.
+
+```{r message=FALSE, warning=FALSE}
+
+loc <- rasterToPoints(ras, fun=NULL, spatial=TRUE)
+str(loc)
+
+```
+
+3. Cliping the object 'loc' by the VC boundary. The resulting object 'loc' will be used as prediction locations.
+
+```{r fig.height=7, fig.width=7, message=FALSE, warning=FALSE}
+
+loc_sf <- st_as_sf(loc, coords = c("x", "y"), remove = FALSE)
+st_crs(lim_cv) <-loc@proj4string@projargs
+
+# Intersection loc, lim_cv
+puntos_dentro <- st_intersection(loc_sf, lim_cv)
+
+# Get the points inside the polygon
+loc2 <- loc_sf[puntos_dentro, ]
+
+loc <- as(loc2, "Spatial")
+str(loc)
+
+plot(st_geometry(lim_cv),
+     col = "grey95",
+     border = "black",
+     main = "Sampling locations",
+     cex.main = 1)
+
+plot(loc_sf,
+     add = TRUE,
+     pch = 16,
+     col = "lightblue",
+     cex = 0.1)
+
+plot(loc,
+     add = TRUE,
+     pch = 16,
+     col = "darkblue",
+     cex = 0.2)
+
+legend("right",
+       legend = c("All stations", "Stations within study area"),
+       pch = c(1, 16),
+       col = c("lightblue", "darkblue"),
+       bty = "n")
+
+```
+
+#**************************************************************************************************************
+#### Coordinate scaling
+#**************************************************************************************************************
+With the 'gstat' library it does not need to standardize the XY coordinates unlike the previously used library 'geoR' in the kriging model. So, we use the original units for the X and Y coordinates of both objects 'dat' and 'loc'.
+
+#**************************************************************************************************************
+#### Reference coordinate system
+#**************************************************************************************************************
+
+Set the reference coordinate system for the object 'dat', making it equal to that in the object 'loc'.
+
+```{r message=FALSE, warning=FALSE}
+
+#proj4string(dat) <- loc@proj4string@projargs
+st_crs(dat) <-loc@proj4string@projargs
+str(loc)
+
+```
+#**************************************************************************************************************
+#### Initialization of the object 'gstat':
+#**************************************************************************************************************
+
+Recursive creation of the object 'g' containing the information for the co-kriging model.
+
+First, we define it with the information of the variable 'autum_winter' and then with the information of the variable 'ALTITUD'.
+
+The global tendency is specified by the parameter 'form' (form = spring ~ X*Y). If we do not use tendency in our model, the parameter 'form' must be set to 'form = spring ~ 1'. The parameter 'data' speficies the actual data.
+
+```{r message=FALSE, warning=FALSE}
+
+datos<-data.frame(dat$X,dat$Y,dat$autum_winter,dat$ALTITUD)
+
+names(datos)<-c("X","Y","autum_winter","ALTITUD")
+
+attach(datos)
+
+coordinates(datos) = ~X+Y
+
+#g <- gstat(NULL, form= spring ~ X*Y, locations= ~X+Y, data=datos)
+#g <- gstat(g, form= ALTITUD ~ X*Y, locations= ~X+Y, data=datos)
+g <- gstat(NULL, form= autum_winter ~ X*Y, data=datos)#, id='autum_winter')
+g <- gstat(g, form= X ~ X*Y, data=datos)#, id='Xcoord')
+g
+
+```
+#**************************************************************************************************************
+#### Empiric and analytic variogram of the first variable
+#**************************************************************************************************************
+
+```{r message=FALSE, warning=FALSE}
+
+plot_semivariogram <- function (variogram, xlim= NULL, ylim= NULL, model= NULL, title= NULL){
+  
+  plot(variogram$dist, variogram$gamma,
+       pch = 20,
+       xlab = "Distance",
+       ylab = "Semivariance",
+       main = title,
+       cex.main = 1.1,
+       cex.lab = 0.95,
+       cex.axis = 0.95,
+       xlim = if (!is.null(xlim)) xlim,
+       ylim = if (!is.null(ylim)) ylim
+  )
+
+  text(x = variogram$dist,
+       y = variogram$gamma ,
+       labels = variogram$np,
+       col= "darkblue",
+       pos = 3,
+       cex = 0.8
+  )
+  
+  if (!is.null(model)) {
+    line_model <- variogramLine(model, maxdist = max(variogram$dist))
+     lines(line_model$dist, line_model$gamma, col = "green", lwd = 1.5)
+  }
+  
+}
+
+```
+
+Empiric variogram with tendency.
+
+```{r fig.height=4, fig.width=9, message=FALSE, warning=FALSE}
+
+xlim= c(0, 135000)
+ylim= c(0, 1500)
+
+varig_1 <- variogram(autum_winter ~ X*Y, data=datos)
+
+plot_semivariogram(varig_1,
+                   xlim= xlim,
+                   ylim= ylim,
+                   title= "Semivariogram - precipitation")
+
+```
+
+Fit an analytical function for the variogram.
+
+
+```{r message=FALSE, warning=FALSE}
+
+get_fitted_models <- function(variogram, sill, range, nugget, names){
+  
+  fitted_models <- list()
+  
+  for (i in seq_along(names)) {
+    fitted_models[[i]] <- fit.variogram(variogram, model= vgm(sill,names[i],range,nugget),fit.method= 6)
+  }
+  
+  names(fitted_models) <- names
+  
+  return(fitted_models)
+}
+
+```
+
+
+```{r fig.height=4*3, fig.width=9, message=FALSE, warning=FALSE}
+
+par(mfrow=c(3,1))
+
+sill <- 1200 
+range <- 90000
+nugget <- 200
+
+names <- c("Gau", "Exp", "Sph")
+
+models <- get_fitted_models(varig_1, sill, range, nugget, names)
+models
+
+par(mfrow=c(3,1))
+for (i in seq_along(names)) {
+  models[i]
+  plot_semivariogram(varig_1,
+                     xlim= xlim,
+                     ylim= ylim,
+                     model= models[[i]],
+                     title= paste0("Semivariogram with - ", names[i]," - model")
+  )
+}
+
+```
+
+#**************************************************************************************************************
+#### Empiric and analytic variogram of the second variable
+#**************************************************************************************************************
+
+Empiric variogram with tendency.
+
+```{r fig.height=4, fig.width=9 message=FALSE, warning=FALSE}
+
+xlim= c(0, 135000)
+ylim= c(0, 700000)
+
+varig_2 <- variogram(X ~ X*Y, data=datos)
+
+plot_semivariogram(varig_2,
+                   xlim= xlim,
+                   ylim= ylim,
+                   title= "Semivariogram - XCoord"
+)
+
+```
+
+# Fit an analytical function for the variogram.
+
+```{r message=FALSE, warning=FALSE}
+
+get_fitted_models <- function(variogram, sill, range, nugget, names){
+  
+  fitted_models <- list()
+  
+  for (i in seq_along(names)) {
+
+    fitted_models[[i]] <- fit.variogram(variogram, model= vgm(sill,names[i],range,nugget),
+                                     fit.sills= TRUE, fit.ranges= TRUE, fit.method= 7,
+                                     debug.level= 1, warn.if.neg= TRUE, fit.kappa= FALSE
+                                     )
+  }
+  
+  names(fitted_models) <- names
+  
+  return(fitted_models)
+}
+```
+
+
+```{r fig.height=4*3, fig.width=9, message=FALSE, warning=FALSE}
+
+sill <- 60000 
+range <- 100000
+nugget <- 1
+
+models <- get_fitted_models(varig_2, sill, range, nugget, names)
+models
+
+par(mfrow=c(3,1))
+
+for (i in seq_along(names)) {
+
+  plot_semivariogram(varig_2,
+                     xlim= xlim,
+                     ylim= ylim,
+                     model= models[[i]],
+                     title= paste0("Semivariogram with - ", names[i]," - model")
+  )
+}
+
+```
+
+#**************************************************************************************************************
+#### Cross variogram
+#**************************************************************************************************************
+
+Joint specification of both individual and cross variograms by using the same variogram model for both.
+
+```{r fig.height=11, fig.width=9*2, message=FALSE, warning=FALSE}
+
+sill <- 60000 
+range <- 100000
+nugget <- 1
+
+model <- get_fitted_models(varig_2, sill, range, nugget, c("Gau"))
+g <- gstat(g, id= "autum_winter", model= model$Gau, fill.all= T)
+
+model$Gau
+g
+
+par(mfrow=c(2,2))
+
+variograms <- variogram(g)
+
+ids <- rev(unique(variogram(g)$id))
+
+for (id in ids){
+  v_sub <- variograms[variograms$id == id, ]
+  plot_semivariogram(v_sub,
+                     xlim= xlim,
+                     ylim= c(min(v_sub$gamma), max(v_sub$gamma)),
+                     title= paste0("Semivariogram - ", id)
+                     )
+}
+
+```
+
+Cross variogram
+
+```{r message=FALSE, warning=FALSE}
+
+varig.cross <- variogram(g)
+
+```
+
+Fit an analytical function for both individual and cross variograms.
+
+```{r fig.height=11, fig.width=9*2, message=FALSE, warning=FALSE}
+
+g <- fit.lmc(varig.cross, g, fit.method = 7, fit.ranges = FALSE, fit.lmc = TRUE, correct.diagonal = 0.95)
+
+par(mfrow=c(2,2))
+
+variograms <- variogram(g)
+models <- g$model
+
+ids <- rev(unique(variogram(g)$id))
+
+for (id in ids){
+  v_sub <- variograms[variograms$id == id, ]
+  current_model <- models[[id]] 
+  plot_semivariogram(v_sub,
+                     xlim= xlim,
+                     ylim= c(min(v_sub$gamma), max(v_sub$gamma)),
+                     model= current_model,
+                     title= paste0("Semivariogram - ", id)
+                     )
+}
+
+```
+
+
+#**************************************************************************************************************
+#### Co-krigin prediction
+#**************************************************************************************************************
+we need to have the same names for variables in both objects 'dat' and 'loc'.
+
+```{r message=FALSE, warning=FALSE}
+
+#loc@data
+loc@data$ALTITUD <- loc@data$mde_100 
+loc@data$X <- loc@coords[,1]
+loc@data$Y <- loc@coords[,2]
+loc1 <- data.frame(loc@data$mde_100,loc@coords[,1],loc@coords[,2])
+names(loc1)<-c("ALTITUD","X","Y")
+coordinates(loc1) = ~X+Y
+
+```
+
+Co-kriging function
+
+```{r message=FALSE, warning=FALSE}
+
+#kc <- predict(g, newdata=loc@data)
+kc <- predict(g, newdata=loc1)
+str(kc)
+
+loc@data$predict <- kc$var1.pred   #predictions
+loc@data$predict.sd <- sqrt(kc$var1.var)   #predicting errors
+
+```
+
+Histograms
+
+```{r fig.height=6, fig.width=9, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+par(mfrow=c(2,2))
+
+hist(kc$var1.pred, breaks=30, main="predictions", xlab= "precipitation (mm)") 
+hist(sqrt(kc$var1.var), breaks=30, main="prediction errors", xlab= "error (mm)")
+hist(kc$cov.var1.var2, breaks=30, main="co-semivariances", xlab= "co-semivariances")
+
+```
+#**************************************************************************************************************
+#### Cross-validation
+#**************************************************************************************************************
+Cross-validation
+ 
+```{r  message=FALSE, warning=FALSE}
+
+kc.cv <- gstat.cv(g, remove.all = FALSE, all.residuals = FALSE, maxdist=120000, nmax=150, nfold= 30)
+
+str(kc.cv)
+
+```
+
+Histograms
+
+```{r fig.height=6, fig.width=9, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+summary(kc.cv$residual)
+
+par(mfrow=c(2,2))
+
+# Histogram of the cross-validation
+
+hist(kc.cv$observed, breaks=30, main="Observations", xlab="precipitation (mm)")
+hist(kc.cv$var1.pred, breaks=30, main="CV-predictions", xlab="precipitation (mm)") 
+hist(kc.cv$residual, breaks=30, main="CV-residuals", xlab="residual (mm)") 
+hist(sqrt(kc.cv$var1.var), breaks=30, main="CV-prediction errors", xlab="error (mm)")
+
+# Diagnosis plots
+
+hist(kc.cv$residual, breaks=30, main="CV-residuals", xlab= "residual (mm)") 
+hist(sqrt(kc.cv$var1.var), breaks=30, main="CV-prediction errors", xlab = "error (mm)") 
+
+plot(kc.cv$observed, kc.cv$var1.pred,
+     main="CV-predictions vs observed",
+     xlab = "precipitation (mm)",
+     ylab = "predicted precipitation (mm)",       
+     cex.main = 1.1,
+     cex.lab = 0.95,
+     cex.axis = 0.95) 
+abline(a=0, b=1, col="blue", lty=1, lwd=1) 
+
+plot(kc.cv$observed, kc.cv$residual,
+     main="CV-residuals vs observed", 
+     xlab = "precipitation (mm)",
+     ylab = "residuals (mm)",
+     cex.main = 1.1,
+     cex.lab = 0.95,
+     cex.axis = 0.95)
+
+abline(h=0, col="blue", lty=2)
+
+```
+
+#**************************************************************************************************************
+#### Map of co-kriging prediction:
+#**************************************************************************************************************
+
+```{r fig.height=10, fig.width=10, message=FALSE, warning=FALSE}
+
+par(mfrow=c(1,2))
+
+######## Map 1 - Predictions########
+
+# Predictions
+loc2 <- loc
+loc2$predict <- SpatialPixelsDataFrame(loc@coords, data=as.data.frame(loc@data$predict))
+q5 <- quantile(loc2$predict@data[,1], c(0,0.10,0.25,0.40,0.60,0.75,0.90,1))
+
+# Predicted precipitation
+image(loc2$predict,
+      col= brewer.pal(7,"Blues"),
+      asp= 1,
+      breaks= q5,
+      frame.plot= FALSE,
+      xlim= c(600000, 800000),
+      main= "Predictions",
+      cex.main= 1)
+
+# Hillshade
+cols <- adjustcolor(grey(0:100/100), alpha.f = 0.4)
+image(hill, col= cols, asp= 1, add= TRUE)
+
+# Legend
+br5 <- cut(loc2$predict@data[,1], breaks=q5, include.lowest=TRUE)
+legend("bottomleft",
+       legend= rev(levels(br5)),
+       fill= rev(brewer.pal(7,"Blues")),
+       title= "Predictions (mm)",
+       cex= 0.7)
+
+# Observed data
+q6 <- quantile(datos$autum_winter, c(0,0.10,0.25,0.40,0.60,0.75,0.90,1))
+br6 <- cut(datos$autum_winter, breaks=q6, include.lowest=TRUE)
+
+points(datos$X, datos$Y,
+       col= brewer.pal(7,"Spectral")[7:1][br6],
+       asp= 1,
+       pch= 16,
+       cex= 0.5)
+
+legend("bottomright",
+       legend= levels(br6)[7:1],
+       fill= brewer.pal(7,"Spectral")[1:7],
+       title= "Observations (mm)",
+       cex= 0.7)
+
+####### Map 2 - Predicting errors########
+
+loc2$predict.sd <- SpatialPixelsDataFrame(loc@coords, data=as.data.frame(loc@data$predict.sd))
+q7 <- quantile(loc2$predict.sd@data[,1], c(0,0.10,0.25,0.40,0.60,0.75,0.90,1))
+
+image(loc2$predict.sd,
+      col= brewer.pal(7, "BuPu"),
+      asp= 1,
+      breaks= q7,
+      frame.plot= FALSE,
+      xlim= c(600000, 800000),
+      main= "Prediction errors",
+      cex.main= 1)
+
+# Hillshade
+image(hill, col= cols, asp= 1, add= TRUE)
+
+# Legend
+br7 <- cut(loc2$predict.sd@data[,1], breaks=q7, include.lowest=TRUE)
+legend("bottomright", 
+       legend= rev(paste(levels(br7),c(" - q0.10"," - q0.25"," - q0.40"," - q0.60"," - q0.75"," - q0.90"," - q1.0"))),
+       fill= rev(brewer.pal(7, "BuPu")), 
+       title= "prediction errors",
+       cex= 0.7)
+
+# Observed points
+points(datos$X, datos$Y,
+       col= brewer.pal(7,"Spectral")[7:1][br6],
+       asp= 1,
+       pch= 16,
+       cex= 0.5)
+
+```

@@ -1,0 +1,392 @@
+---
+title: ""
+subtitle: "Descriptive analysis and linear regressions"
+output: html_document
+header-includes:
+   - \usepackage{setspace}
+---
+
+#### Install packages.
+
+```{r message=FALSE, warning=FALSE}
+
+install.packages("raster")
+install.packages("classInt")
+install.packages("RColorBrewer")
+install.packages("sf")
+install.packages("ggplot2")
+
+```
+
+
+#### Load packages.
+
+```{r message=FALSE, warning=FALSE}
+
+library(raster)
+library(classInt)
+library(RColorBrewer)
+library("sf")
+library(ggplot2)
+
+```
+
+#### Set working directory
+```{r message=FALSE, warning=FALSE, eval=TRUE, echo=TRUE}
+
+setwd("../Solucion")
+
+```
+#### Loading and ploting the observations
+
+Reading the shape point file which contains the data and converting it to a spatial-points object of R.
+
+```{r message=FALSE, warning=FALSE}
+
+dat <- read_sf("Datos_cp4/precip_seasonal.shp") # (from shp to object of R)
+
+#autumn and winter average
+dat$autum_winter <-(dat$autumn + dat$winter)/2
+
+#Transform it into a sf object
+dat_sf <- st_as_sf(dat)
+dat <- dat_sf
+
+```
+
+A summary of the structure and content of the created object
+
+```{r message=FALSE, warning=FALSE}
+
+str(dat)
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+dev.new()
+plot(dat[,12:18])
+
+```
+
+#### Loading and ploting the observations the Valencian Community (VC) administrative boundaries
+Reading the shape polygons file which contains the border of the Valencian Community and converting it to a spatial-polygons object of R.
+
+Visualizing a summary of the structure and content of the object.
+
+Plot the border map.
+
+```{r fig.height=7, fig.width=7, message=FALSE, warning=FALSE}
+
+#lim_cv <- readShapePoly("Datos_cp4/cv.shp")
+lim_cv <- read_sf("Datos_cp4/cv.shp")
+str(lim_cv)
+ggplot(lim_cv) +
+  geom_sf(fill = "lightblue", color = "darkblue", linewidth = 0.3) +
+  theme_minimal() +
+  labs(title = "Comunidad Valenciana") +
+  theme(plot.title = element_text(face = "bold", size = 12),
+        axis.text = element_text(size = 5)
+)
+
+```
+
+#### Loading and ploting the the raster file with the Digital Elevation Model (DEM)
+
+Reading the raster file which contains DEM and converting it to a raster object of R.
+
+Visualizing a summary of the structure and content of the object.
+
+Plot the DEM map.
+
+```{r fig.height=7, fig.width=7, message=FALSE, warning=FALSE}
+
+ras <- raster("Datos_cp4/mde_100.tif", layer=0, values=TRUE)
+str(ras)
+
+slope <- terrain(ras, opt = "slope")
+aspect <- terrain(ras, opt = "aspect")
+hill <- hillShade(slope, aspect, angle = 45, direction = 315)
+
+par(bty = "n")
+plot(hill, col = grey(0:100/100), legend = FALSE, axes = FALSE, main = "MDT with hillshade",  cex.main = 1)
+plot(ras, col = rev(terrain.colors(100, alpha = 0.5)), add = TRUE, axis.args = list(cex.axis = 0.7))
+
+```
+#### Plot of the observations and the DEM
+
+```{r fig.height=7, fig.width=7, message=FALSE, warning=FALSE}
+
+par(cex.axis = 0.7)
+
+# ploting the DEM
+q1 <- classIntervals(getValues(ras)[getValues(ras)>0.05], n = 15, style = "quantile")
+q1$brks <- round(c(0,q1$brks),1)
+col <- c("#deebf7", gray.colors(16, start = 0.0, end = 1, alpha = 1)[-1])
+
+image(hill, col = grey(0:100/100), asp = 1, frame.plot = FALSE, xlim = c(600000, 1000000),
+      main = "Average Fall-Winter Precipitation", cex.main = 1)
+image(ras, col = col, breaks = q1$brks, asp = 1, frame.plot = FALSE, xlim = c(600000, 1000000), add = TRUE)
+
+# adding the DEM's legend
+br <- cut(getValues(ras), breaks=q1$brks, include.lowest=TRUE)
+legend(x=850000, y=4370000, legend=levels(br)[15:1], fill=col[15:1], ncol=1, title= "MDT", cex=0.7, box.col = "grey")
+
+# adding the borders of VC.
+lines(lim_cv, col="darkblue", lwd=0.3)
+
+# adding the observations
+q <- quantile(dat$autum_winter, c(0,0.10,0.25,0.40,0.60,0.75,0.90,1))
+br1 <- cut(dat$autum_winter, breaks=q, include.lowest=TRUE)
+points(dat$X, dat$Y, col=brewer.pal(7,"Spectral")[7:1][br1], asp=1, pch=16) 
+
+# adding a legend for the observations
+legend(x=850000, y=4500000, legend=levels(br)[7:1], fill=brewer.pal(7,"Spectral")[1:7], title= "Autum_winter precipitation", cex=0.7, box.col = "grey")
+
+```
+#**************************************************************************************************************
+#******************************Frecuency histograms of the precipitation variables*****************************
+#**************************************************************************************************************
+
+Frecuency histograms and standard deviation of the precipitation variables: 'annual', 'spring', 'summer', 'autumn', 'winter' and 'autum_winter'.
+
+```{r message=FALSE, warning=FALSE}
+
+par(mfrow=c(2,3))
+
+hist(dat$annual, breaks=20, main="annual", xlab="Precipitation (mm)"); print("sd annual"); sd(dat$annual) 
+hist(dat$spring, breaks=20, main="spring", xlab="Precipitation (mm)"); print("sd spring"); sd(dat$spring)
+hist(dat$summer, breaks=20, main="summer", xlab="Precipitation (mm)"); print("sd summer"); sd(dat$summer)
+hist(dat$autumn, breaks=20, main="autumn", xlab="Precipitation (mm)"); print("sd autumn"); sd(dat$autumn)
+hist(dat$winter, breaks=20, main="winter", xlab="Precipitation (mm)"); print("sd winter"); sd(dat$winter)
+hist(dat$autum_winter, breaks=20, main="autum_winter", xlab="Precipitation (mm)"); print("sd autum_winter"); sd(dat$autum_winter)
+
+```
+
+#### Frecuency histograms of co-variables.
+
+Frecuency histograms of the variables: 'ALTITUD', 'Xutm', 'Yutm'.
+
+```{r message=FALSE, warning=FALSE}
+
+par(mfrow=c(2,2))
+
+hist(dat$ALTITUD, breaks=20, main="ALTITUDE", xlab="Altitude(m)") 
+hist(sqrt(dat$ALTITUD), breaks=20, main="sqrt(ALTITUDE)", xlab="Square root of the altitude") 
+hist(dat$X, breaks=20, main="coord X", xlab="X coordinate (m)")
+hist(dat$Y, breaks=20, main="coord Y", xlab="Y coordinate (m)")
+
+```
+#**************************************************************************************************************
+#****************************************Relationship between variables****************************************
+#**************************************************************************************************************
+
+
+```{r message=FALSE, warning=FALSE}
+
+par(mfrow = c(1, 3))
+
+plot(dat$autum_winter, dat$ALTITUD,
+     xlab = "autum-winter precipitation (mm)",
+     ylab = "Altitude (m)",
+     main = "Precipitation vs altitude",
+     cex.main = 1.1, cex.lab = 0.95, cex.axis = 0.95,
+)
+correl = round(cor(dat$autum_winter, dat$ALTITUD),3)
+mtext(paste0("ρ = ", correl), side = 3, line = 0.3, cex = 0.6)
+
+plot(dat$autum_winter, dat$X,
+     xlab = "autum-winter precipitation (mm)",
+     ylab = "X coordinate (m)",
+     main = "Precipitation vs X coordinate",
+     cex.main = 1.1, cex.lab = 0.95, cex.axis = 0.95,
+)
+correl = round(cor(dat$autum_winter, dat$X),3)
+mtext(paste0("ρ = ", correl), side = 3, line = 0.3, cex = 0.6)
+
+plot(dat$autum_winter, dat$Y,
+     xlab = "autum-winter precipitation (mm)",
+     ylab = "y coordinate (m)",
+     main = "Precipitation vs Y coordinate",
+     cex.main = 1.1, cex.lab = 0.95, cex.axis = 0.95,
+)
+correl = round(cor(dat$autum_winter, dat$Y),3)
+mtext(paste0("ρ = ", correl), side = 3, line = 0.3, cex = 0.6)
+
+par(mfrow = c(1, 1))
+
+```
+
+#**************************************************************************************************************
+#**********************************************LINEAR REGRESION MODELS******************************
+#**************************************************************************************************************
+
+
+```{r message=FALSE, warning=FALSE}
+
+plot_diagnostics <- function(obs, model) {
+
+  par(mfrow = c(2, 2))
+
+  # Histogram fitted residuals
+  hist(model$residuals,
+       breaks = 20,
+       main = "Residuals",
+       xlab = "Residual")
+
+  # Histogram observations
+  hist(obs,
+       breaks = 20,
+       main = "Observations",
+       xlab = "Precipitation (mm)")
+
+  # Plot observations vs fitted values
+  plot(obs, model$fitted.values,
+       asp = 1,
+       xlab = "Precipitation (mm)",
+       ylab = "Predicted precipitation (mm)",
+       main = "Observation vs Prediction",
+       cex.main = 1.1,
+       cex.lab = 0.95,
+       cex.axis = 0.95)
+
+  abline(a = 0, b = 1, col = "blue")
+  
+  # Plot observations vs residuals
+  plot(obs, model$residuals,
+       asp = 1,
+       xlab = "Precipitation (mm)",
+       ylab = "Residuals",
+       main = "Observation vs Residual",
+       cex.main = 1.1,
+       cex.lab = 0.95,
+       cex.axis = 0.95)
+
+  abline(h = 0, col = "blue", lty = 2)
+
+  par(mfrow = c(1, 1))
+}
+
+```
+
+#### *Model 1* - Simple lineal with Altitude:
+
+$$
+\begin{align}
+& X^{autum-winter}_i \sim \mathcal{N}(\mu_i,\sigma^2),  \hspace{15mm} i=1,\cdots,n \\
+\\
+&\mu_i =  \beta_0 + \beta_1 X^{altitud}_i
+\end{align}
+$$
+#******************************
+#*******Model adjustment*******
+#******************************
+
+```{r message=FALSE, warning=FALSE}
+
+aj_1 <- lm( autum_winter ~ ALTITUD, data=dat)
+summary(aj_1)
+
+```
+#******************************
+#*******Diagnosis plots********
+#******************************
+
+```{r fig.height=6, fig.width=7, message=FALSE, warning=FALSE}
+
+plot_diagnostics(dat$autum_winter, aj_1)
+
+```
+
+#### *Model 2* - Linear Multiple with X, Y, and the interaction between X and Y:
+
+$$
+\begin{align}
+& X^{autum-winter}_i \sim \mathcal{N}(\mu_i,\sigma^2),  \hspace{15mm} i=1,\cdots,n \\
+\\
+&\mu_i =  \beta_0 + \beta_1 \cdot X^{Xutm}_i + \beta_2 \cdot X^{Yutm}_i + \beta_3 \cdot X^{Xutm}_i \cdot X^{Yutm}_i.
+\end{align}
+$$
+#******************************
+#*******Model adjustment*******
+#******************************
+```{r message=FALSE, warning=FALSE}
+
+aj_2 <- lm( autum_winter ~ dat$X*dat$Y, data=dat)
+summary(aj_2)
+
+```
+
+#******************************
+#*******Diagnosis plots********
+#******************************
+
+```{r fig.height=6, fig.width=7, message=FALSE, warning=FALSE}
+
+plot_diagnostics(dat$autum_winter, aj_2)
+
+```
+
+
+#### *Model 3* - Multiple Linear with X, Y, ALTITUDE, and the interaction between X and Y:
+
+$$
+\begin{align}
+& X^{autum-winter}_i \sim \mathcal{N}(\mu_i,\sigma^2),  \hspace{15mm} i=1,\cdots,n \\
+\\
+&\mu_i =  \beta_0 + \beta_1 \cdot X^{altitud}_i + \beta_2 \cdot X^{Xutm}_i + \beta_3 \cdot X^{Yutm}_i + \beta_4 \cdot X^{Xutm}_i \cdot X^{Yutm}_i.
+\end{align}
+$$
+#******************************
+#*******Model adjustment*******
+#******************************
+```{r message=FALSE, warning=FALSE}
+
+aj_3 <- lm( autum_winter ~ ALTITUD + dat$X*dat$Y , data=dat )
+summary(aj_3)
+
+```
+
+#******************************
+#*******Diagnosis plots********
+#******************************
+
+```{r fig.height=6, fig.width=7, message=FALSE, warning=FALSE}
+
+plot_diagnostics(dat$autum_winter, aj_3)
+
+```
+
+
+#### *Model 4*: multiple linear regression with X, Y, ALTITUDE, and the interaction between the three variables:
+
+$$
+\begin{align}
+& X^{autum-winter}_i \sim \mathcal{N}(\mu_i,\sigma^2),  \hspace{15mm} i=1,\cdots,n \\
+\\
+&\mu_i =  \beta_0 + \beta_1 \cdot X^{altitud}_i + \beta_2 \cdot X^{Xutm}_i + \beta_3 \cdot X^{Yutm}_i + \beta_4 \cdot X^{altitud}_i \cdot X^{Xutm}_i \\
+& + \beta_5 \cdot X^{altitud}_i \cdot X^{Yutm}_i + \beta_6 \cdot X^{Xutm}_i \cdot X^{Yutm}_i + \beta_7 \cdot X^{altitud}_i \cdot X^{Xutm}_i \cdot X^{Yutm}_i .
+\end{align}
+$$
+
+#******************************
+#*******Model adjustment*******
+#******************************
+```{r message=FALSE, warning=FALSE}
+
+aj_4 <- lm( autum_winter ~ ALTITUD*dat$X*dat$Y , data=dat )
+summary(aj_4)
+
+```
+#******************************
+#*******Diagnosis plots********
+#******************************
+
+```{r fig.height=6, fig.width=7, message=FALSE, warning=FALSE}
+
+plot_diagnostics(dat$autum_winter, aj_4)
+
+```
+
+

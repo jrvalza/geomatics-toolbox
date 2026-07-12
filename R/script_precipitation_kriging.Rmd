@@ -1,0 +1,660 @@
+---
+title: ""
+subtitle: "Kriging prediction using the ‘geoR’ library"
+output: html_document
+header-includes:
+   - \usepackage{setspace}
+---
+
+#### Install packages.
+
+```{r message=FALSE, warning=FALSE}
+
+install.packages("raster")
+install.packages("classInt")
+install.packages("RColorBrewer")
+install.packages("geoR")
+install.packages("sf")
+
+```
+
+
+#### Load packages.
+
+```{r message=FALSE, warning=FALSE}
+
+library(raster)
+library(classInt)
+library(RColorBrewer)
+library(geoR)
+library("sf")
+library(ggplot2)
+
+```
+
+#### Set working directory
+
+Note that in R the bar of a path is /, while in Windows it is the counterbar.
+
+```{r message=FALSE, warning=FALSE, eval=TRUE, echo=TRUE}
+
+setwd("../Solucion")
+
+```
+
+
+#### Loading the observations
+
+Loading the shape point file which contains the observed data.
+
+```{r message=FALSE, warning=FALSE}
+
+dat <- read_sf("Datos_cp4/precip_seasonal.shp")
+
+#autumn and winter average
+dat$autum_winter <-(dat$autumn + dat$winter)/2
+
+#Transform it into a sf object
+dat_sf <- st_as_sf(dat)
+dat <- dat_sf
+
+```
+
+#### Loading the Valencian Community (VC) administrative boundaries
+
+Loading the shape polygons file which contains the border of the Valencian Community.
+
+```{r fig.height=7, fig.width=7, message=FALSE, warning=FALSE}
+
+lim_cv <- read_sf("Datos_cp4/cv.shp")
+str(lim_cv)
+ggplot(lim_cv) +
+  geom_sf(fill = "lightblue", color = "darkblue", linewidth = 0.3) +
+  theme_minimal() +
+  labs(title = "Comunidad Valenciana") +
+  theme(plot.title = element_text(face = "bold", size = 12),
+        axis.text = element_text(size = 5)
+  )
+
+```
+
+
+
+
+#**************************************************************************************************************
+#### Loading the raster file with the Digital Elevation Model (DEM)
+#**************************************************************************************************************
+
+Reading the raster file which contains DEM.
+
+```{r fig.height=7, fig.width=7, message=FALSE, warning=FALSE}
+
+ras <- raster("Datos_cp4/mde_100.tif", layer=0, values=TRUE)
+str(ras)
+
+slope <- terrain(ras, opt = "slope")
+aspect <- terrain(ras, opt = "aspect")
+hill <- hillShade(slope,
+                  aspect,
+                  angle = 45,
+                  direction = 315)
+
+par(bty = "n")
+plot(hill, 
+     col= grey(0:100/100),
+     legend= FALSE,
+     axes= FALSE,
+     main= "MDT with hillshade", 
+     cex.main= 1)
+
+plot(ras,
+     col= rev(terrain.colors(100, alpha = 0.5)),
+     add= TRUE,
+     axis.args= list(cex.axis = 0.7))
+
+```
+
+#**************************************************************************************************************
+#### Obtaining the predicting locations
+#**************************************************************************************************************
+In order to obtain a continuous map of precipitation, we need to make punctual predictions in a dense grid of locations.
+First of all, the spatial resolution of the raster object can be reduced. 
+Finally, the grid of points will be clipped by the border of CV.
+
+1. Reducing the spatial resolution of the raster. Reduction factor=1/16.
+
+```{r message=FALSE, warning=FALSE}
+
+ras <- aggregate(ras, fact=c(4,4), fun=mean) # Resampling
+str(ras)
+
+```
+
+2. Converting the raster to a SpatialPoints, thus obtaing the grid of predicting points, stored in the new object 'loc'.
+
+```{r message=FALSE, warning=FALSE}
+
+loc <- rasterToPoints(ras, fun=NULL, spatial=TRUE)
+str(loc)
+
+```
+
+3. Cliping the object 'loc' by the VC boundary. The resulting object 'loc' will be used as prediction locations.
+
+```{r fig.height=7, fig.width=7, message=FALSE, warning=FALSE}
+
+loc_sf <- st_as_sf(loc, coords = c("x", "y"), remove = FALSE)
+st_crs(lim_cv) <-loc@proj4string@projargs
+
+# Intersection loc, lim_cv
+puntos_dentro <- st_intersection(loc_sf, lim_cv)
+
+# Get the points inside the polygon
+loc2 <- loc_sf[puntos_dentro, ]
+
+loc <- as(loc2, "Spatial")
+str(loc)
+
+plot(st_geometry(lim_cv),
+     col = "grey95",
+     border = "black",
+     main = "Sampling locations",
+     cex.main = 1)
+
+plot(loc_sf,
+     add = TRUE,
+     pch = 16,
+     col = "lightblue",
+     cex = 0.1)
+
+plot(loc,
+     add = TRUE,
+     pch = 16,
+     col = "darkblue",
+     cex = 0.2)
+
+legend("right",
+       legend = c("All stations", "Stations within study area"),
+       pch = c(1, 16),
+       col = c("lightblue", "darkblue"),
+       bty = "n")
+
+```
+
+#**************************************************************************************************************
+#### Scale and center the coordinates (Normalization)
+#**************************************************************************************************************
+
+Due to the fact that when using the library 'geoR' to peformm kriging, an numerical inestability error is obtained when data have UTM spatial coordinates, we should first scale the spatial coordinates variables.
+
+```{r message=FALSE, warning=FALSE}
+
+media <- colMeans(loc@coords[,]) # Centroid of the object 'loc'
+desv <- sd(loc@coords[,]) # Common standard deviation of X and Y coordinates.
+
+```
+
+Scaling the observations
+
+```{r message=FALSE, warning=FALSE}
+
+#dat@coords <- scale(dat@coords, center= media, scale= c(desv,desv))
+#str(dat)
+dat$X1 = (dat$X-media[1])/desv
+dat$Y1 = (dat$Y-media[2])/desv
+
+```
+
+Scaling the predicting locations
+
+```{r message=FALSE, warning=FALSE}
+
+loc@coords <- scale(loc@coords,
+                    center= media,
+                    scale= c(desv,desv))
+str(loc)
+
+```
+
+#**************************************************************************************************************
+#### Isotropic (omnidirectional) empiric variogram.
+#**************************************************************************************************************
+
+```{r message=FALSE, warning=FALSE}
+
+add_models <- function(models) {
+  cols <- c("red", "darkblue", "cyan")
+  for (i in seq_along(models)) {
+    lines(models[[i]], lwd = 1, col = cols[i])
+  }
+  legend("bottomright", title = "Model", legend = c("exponential", "gaussian", "spherical"),
+         col = cols, lty = 1, lwd = 1.5, cex = 0.7)
+}
+
+plot_semivariogram <- function(svar1, xlabel1, svar2, xlabel2, desv=NULL, models=NULL) {
+  
+  par(mfrow=c(1,2))
+  
+  #First graph
+  plot(svar1, pch=20, 
+       xlab=xlabel1,
+       ylab = "Semivariance",
+       main = "Semivariogram",
+       cex.main = 1.1,
+       cex.lab = 0.95,
+       cex.axis = 0.95,
+       xaxt = if (is.null(desv)) "s" else "n"
+  )
+  
+  if (!is.null(desv)) {  
+    axis(1, at= c(0,50000,150000,250000,350000)/desv,
+         labels= c(0,50000,150000,250000,350000),
+         tick= TRUE,
+         lty= 1,
+         las=1,
+         cex.axis=1,
+         font=1,
+         col=grey(0.5),
+         col.ticks=grey(0.3))
+  }
+    
+  # Add models
+  if (!is.null(models)) {
+    add_models(models)
+  }
+  
+  #Second graph
+  plot(svar2, pch=20, 
+       xlab=xlabel2,
+       ylab = "Semivariance",
+       main = "Semivariogram",
+       cex.main = 1.1,
+       cex.lab = 0.95,
+       cex.axis = 0.95
+  )
+  ## Add model
+  if (!is.null(models)) {
+    add_models(models)
+  }
+  
+  par(mfrow=c(1,1))
+
+}
+
+```
+
+
+Semivariogram without tendency
+
+```{r fig.height=4, fig.width=9, message=FALSE, warning=FALSE}
+
+svar1 <- variog(coords=data.frame(dat$X1,dat$Y1),
+                data=dat$autum_winter,
+                uvec=seq(0,0.19,0.005),
+                trend= "cte")  
+str(svar1)
+
+svar1_undo <- svar1
+svar1_undo$u <- svar1$u*desv
+ 
+plot_semivariogram(svar1 =  svar1_undo,
+                   xlabel1 = "original distance",
+                   svar2 = svar1,
+                   xlabel2 = "scaled distance"
+)
+
+```
+
+Semivariogram with tendency
+
+```{r fig.height=4, fig.width=9, message=FALSE, warning=FALSE}
+
+svar2 <- variog(coords=data.frame(dat$X1,dat$Y1),
+                data=dat$autum_winter,
+                uvec=seq(0,0.19,0.005),
+                trend= ~dat$X1*dat$Y1*dat$ALTITUD)
+str(svar2)
+
+plot_semivariogram(svar1 = svar2,
+                   xlabel1 = "original distance",
+                   svar2 = svar2,
+                   xlabel2 = "scaled distance",
+                   desv = desv
+)
+```
+### Histogram of distances
+
+```{r fig.height=4, fig.width=9, message=FALSE, warning=FALSE}
+
+par(mfrow=c(1,2))
+
+########## Plot with the original distances
+
+distancias_undo <- as.matrix(dist(data.frame(dat$X1,dat$Y1)*desv))[upper.tri(as.matrix(dist(data.frame(dat$X1,dat$Y1))), diag=FALSE)]
+
+hist(distancias_undo[distancias_undo<=0.19*desv],
+     breaks=seq(0,0.19*desv,0.005*desv),
+     main="", xlab="original distance"
+)
+
+########## Plot with the scaled distances
+distancias <- as.matrix(dist(data.frame(dat$X1,dat$Y1)))[upper.tri(as.matrix(dist(data.frame(dat$X1,dat$Y1))), diag=FALSE)]
+                        
+hist(distancias[distancias<=0.19],
+     breaks=seq(0,0.19,0.005),
+     main="",
+     xlab="scaled distance"
+)
+
+```
+
+#**************************************************************************************************************
+#***********************************************VARIOGRAM MODEL************************************************
+#***********************************Adjust of different variogram functions************************************
+#**************************************************************************************************************
+
+
+```{r message=FALSE, warning=FALSE}
+
+fit_variogram <- function(vario, sill, range, nugget, covmodel) {
+  variofit(
+    vario = vario,
+    ini = c(sill, range),
+    cov.model = covmodel,
+    fix.nugget = FALSE,
+    nugget = nugget,
+    weights = "cressie",
+    minimisation.function = "optim",
+    max.dist = 0.2,
+    fix.kappa = FALSE
+  )
+}
+
+```
+
+
+
+```{r fig.height=4, fig.width=9, message=FALSE, warning=FALSE}
+
+sill <- 1180 
+range <- 0.05  # Notice it is in the scaled range
+nugget <- 200
+
+svar.exp <- fit_variogram(svar2, sill, range, nugget, "exponential")
+svar.gau <- fit_variogram(svar2, sill, range, nugget, "gaussian")
+svar.sph <- fit_variogram(svar2, sill, range, nugget, "spherical")
+
+plot_semivariogram(svar1 = svar2,
+                   xlabel1 = "original distance",
+                   svar2 = svar2,
+                   xlabel2 = "scaled distance",
+                   desv = desv,
+                   models = list(svar.exp, svar.gau, svar.sph)
+)
+
+```
+
+#**************************************************************************************************************
+#### Kriging adjustment
+#**************************************************************************************************************
+Adjustment of Kriging model 
+
+```{r message=FALSE, warning=FALSE}
+
+uk <- krige.conv(data=dat$autum_winter, coords=data.frame(dat$X1,dat$Y1), 
+                 locations= loc@coords, 
+                 krige= krige.control(type.krige = "ok", trend.d= trend.spatial( ~dat$X1*dat$Y1*dat$ALTITUD ),
+                                      trend.l= trend.spatial( ~loc@coords[,1]*loc@coords[,2]*loc@data$mde_100 ),
+                                      obj.model= svar.exp))  
+str(uk)
+
+```
+
+Adding kriging outcomes to the object 'loc'
+
+```{r message=FALSE, warning=FALSE}
+
+loc@data$predict <- uk$predict  # predictions
+loc@data$predict.sd <- sqrt(uk$krige.var)  # prediction error
+
+```
+
+#**************************************************************************************************************
+#### Cross-validation (CV) model assesment
+#**************************************************************************************************************
+
+```{r echo=True, message=FALSE, warning=FALSE, results=FALSE, paged.print=FALSE}
+
+for(i in 1:212){
+  
+  uk_vc <- krige.conv(data= dat$autum_winter[-i],
+                      coords= data.frame(dat$X1,dat$Y1)[-i,],
+                      locations= data.frame(dat$X1,dat$Y1)[i,],
+                      borders= NULL,
+                      krige= krige.control(type.krige= "ok",
+                                           trend.d= trend.spatial( ~dat$X1[-i]*dat$Y1[-i]*dat$ALTITUD[-i]),
+                                           trend.l= trend.spatial( ~dat$X1[i]*dat$Y1[i]*dat$ALTITUD[i]),
+                                           obj.model= svar.exp))
+  
+  dat$predict.cv[i] <- uk_vc$predict  
+  dat$predict.cv.sd[i] <- sqrt(uk_vc$krige.var)  
+}	
+
+```
+
+
+Computing Cross-validation (CV) residuals
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+dat$res.cv <- dat$autum_winter[] - dat$predict.cv
+
+str(dat)
+
+```
+
+Diagnosis plots
+
+
+```{r message=FALSE, warning=FALSE}
+
+plot_diagnostics <- function(obs, model) {
+
+  par(mfrow = c(2, 2))
+
+  # Histogram fitted residuals
+  hist(model$residuals,
+       breaks = 20,
+       main = "Residuals",
+       xlab = "Residual")
+
+  # Histogram observations
+  hist(obs,
+       breaks = 20,
+       main = "Observations",
+       xlab = "Precipitation (mm)")
+
+  # Plot observations vs fitted values
+  plot(obs, model$fitted.values,
+       asp = 1,
+       xlab = "Precipitation (mm)",
+       ylab = "Predicted precipitation (mm)",
+       main = "Observation vs Prediction",
+       cex.main = 1.1,
+       cex.lab = 0.95,
+       cex.axis = 0.95)
+
+  abline(a = 0, b = 1, col = "blue")
+  
+  # Plot observations vs residuals
+  plot(obs, model$residuals,
+       asp = 1,
+       xlab = "Precipitation (mm)",
+       ylab = "Residuals",
+       main = "Observation vs Residual",
+       cex.main = 1.1,
+       cex.lab = 0.95,
+       cex.axis = 0.95)
+
+  abline(h = 0, col = "blue", lty = 2)
+
+  par(mfrow = c(1, 1))
+}
+```
+
+
+
+
+
+
+```{r fig.height=6, fig.width=9, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+#Summary of CV-residuals
+summary(dat$res.cv)
+
+# Histogram of the cross-validation
+par(mfrow=c(2,2))
+hist(dat$autum_winter, breaks=30, main="Observations", xlab="precipitation (mm)")
+hist(dat$predict.cv, breaks=30, main="CV-predictions (over training data)", xlab="precipitation (mm)") 
+hist(dat$res.cv, breaks=30, main="CV-residuals", xlab="residual (mm)")  
+hist(dat$predict.cv.sd, breaks=30, main="CV-prediction errors", xlab="error (mm)")   
+
+# Diagnosis plots
+par(mfrow=c(2,2))
+hist(dat$res.cv, breaks=30, main="CV-residuals", xlab= "residual (mm)") 
+hist(dat$predict.cv.sd, breaks=30, main="CV-prediction errors", xlab = "error (mm)") 
+
+plot(dat$autum_winter, dat$predict.cv,
+     main="CV-predictions vs observed",
+     xlab = "precipitation (mm)",
+     ylab = "predicted precipitation (mm)",       
+     cex.main = 1.1,
+     cex.lab = 0.95,
+     cex.axis = 0.95) 
+abline(a=0, b=1, col="blue", lty=1, lwd=1) 
+
+plot(dat$autum_winter, dat$res.cv,
+     main="CV-residuals vs observed", 
+     xlab = "precipitation (mm)",
+     ylab = "residuals (mm)",
+     cex.main = 1.1,
+     cex.lab = 0.95,
+     cex.axis = 0.95)
+
+abline(h=0, col="blue", lty=2) 
+
+```
+
+Identifying outliers
+
+```{r message=FALSE, warning=FALSE}
+
+dat[ dat$res.cv < -40 | dat$res.cv > 40 , c(1:2,12:19)]
+
+```
+
+
+#**************************************************************************************************************
+#### Undo the scaling of the spatial coordinates
+#**************************************************************************************************************
+
+```{r message=FALSE, warning=FALSE}
+
+loc@coords <- scale(loc@coords, center=FALSE, scale= 1/c(desv,desv))
+loc@coords <- scale(loc@coords, center= -1*media, scale=FALSE)
+
+dat$X2 = (dat$X1*desv)+media[1]
+dat$Y2 = (dat$Y1*desv)+media[2]
+
+#dat@coords <- scale(dat@coords, center=FALSE, scale= 1/c(desv,desv))
+#dat@coords <- scale(dat@coords, center= -1*media, scale=FALSE)
+
+```
+
+#**************************************************************************************************************
+#### Map of the kriging predictions
+#**************************************************************************************************************
+```{r fig.height=10, fig.width=10, message=FALSE, warning=FALSE}
+
+par(mfrow=c(1,2))
+
+######## Map 1 - Predictions########
+
+loc1_predict <- SpatialPixelsDataFrame(loc@coords, data=as.data.frame(loc@data$predict))
+q2 <- quantile(loc1_predict@data[,1], c(0,0.10,0.25,0.40,0.60,0.75,0.90,1))
+
+# Predicted precipitation
+image(loc1_predict,
+      col= brewer.pal(7,"Blues"),
+      asp= 1,
+      breaks= q2,
+      frame.plot= FALSE,
+      xlim= c(600000, 800000),
+      main= "Predictions",
+      cex.main= 1)
+
+# Hillshade
+cols <- adjustcolor(grey(0:100/100), alpha.f = 0.4)
+image(hill, col= cols, asp= 1, add= TRUE)
+
+# Legend
+br2 <- cut(loc1_predict@data[,1], breaks=q2, include.lowest=TRUE)
+legend("bottomleft",
+       legend= rev(levels(br2)),
+       fill= rev(brewer.pal(7,"Blues")),
+       title= "Predictions (mm)",
+       cex= 0.7)
+
+
+# Observed data.
+q3 <- quantile(dat$autum_winter[], c(0,0.10,0.25,0.40,0.60,0.75,0.90,1))
+br3 <- cut(dat$autum_winter[], breaks=q3, include.lowest=TRUE)
+
+points(dat$X2, dat$Y2,
+       col= brewer.pal(7,"Spectral")[7:1][br3],
+       asp= 1,
+       pch= 16,
+       cex= 0.5)
+
+legend("bottomright",
+       legend= levels(br3)[7:1],
+       fill= brewer.pal(7,"Spectral")[1:7],
+       title= "Observations (mm)",
+       cex= 0.7)
+
+
+####### Map 2 - Predicting errors########
+
+loc1_predict.sd <- SpatialPixelsDataFrame(loc@coords, data=as.data.frame(loc@data$predict.sd))
+q4 <- quantile(loc1_predict.sd@data[,1], c(0,0.10,0.25,0.40,0.60,0.75,0.90,1))
+
+image(loc1_predict.sd,
+      col= brewer.pal(7, "BuPu"),
+      asp= 1,
+      breaks= q4,
+      frame.plot= FALSE,
+      xlim= c(600000, 800000),
+      main= "Prediction errors",
+      cex.main= 1)
+
+# Hillshade
+image(hill, col= cols, asp= 1, add= TRUE)
+
+# Legend
+br4 <- cut(loc1_predict.sd@data[,1], breaks=q4, include.lowest=TRUE)
+legend("bottomright", 
+       legend= rev(paste(levels(br4),c(" - q0.10"," - q0.25"," - q0.40"," - q0.60"," - q0.75"," - q0.90"," - q1.0"))),
+       fill= rev(brewer.pal(7, "BuPu")), 
+       title= "prediction errors",
+       cex= 0.7)
+
+# Observed data.
+points(dat$X2, dat$Y2,
+       col= brewer.pal(7,"Spectral")[7:1][br3],
+       asp= 1,
+       pch= 16,
+       cex= 0.5)
+
+```
+
+
