@@ -1,27 +1,29 @@
 ## Geostatistical interpolation
 
 | Kriging prediction | Co-kriging prediction |
-|---|---| 
-| ![a](misc/kriging.png) | ![b](misc/co-kriging.png) |
-| ![c](misc/kriging-diagnosis.png) | ![d](misc/co-kriging-diagnosis.png) |
+|:---:|:---:|
+| ![Kriging prediction](misc/kriging.png) | ![Co-kriging prediction](misc/co-kriging.png) |
+| ![Kriging diagnostics](misc/kriging-diagnosis.png) | ![Co-kriging diagnostics](misc/co-kriging-diagnosis.png) |
 
 ---
-
 ## Spatial autocorrelation
 
 | Spatial distribution | Local Moran's I |
-|---|---| 
-| ![e](misc/var_distribution.png) | ![f](misc/Iocal-moran.png) | 
-| | |
-| LISA | Hot spot|
-| ![g](misc/LISA-map.png) | ![h](misc/hot-spots.png) |
+|:---:|:---:|
+| ![Spatial distribution](misc/var_distribution.png) | ![Local Moran's I](misc/Iocal-moran.png) |
+
+| LISA cluster map | Hot spot analysis |
+|:---:|:---:|
+| ![LISA map](misc/LISA-map.png) | ![Hot spot map](misc/hot-spots.png) |
 
 ---
 
 ## Clustering
 
-| K-Means | Hierarchical Clustering| 
-|---|---| 
-| ![i](misc/kmeans-clustering.png) | ![j](misc/hclusters.png) |
+| K-Means | Hierarchical Clustering |
+|:---:|:---:|
+| ![K-Means clustering](misc/kmeans-clustering.png) | ![Hierarchical clustering](misc/hclusters.png) |
+| ![meansclusters](misc/meansclusters.png) | ![dendogram](misc/dendogram.png) |
 
 ---
+

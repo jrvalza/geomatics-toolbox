@@ -6,7 +6,7 @@ library("tmap")
 library("sp")
 library("sf")
 
-setwd("")
+setwd()
 
 # Load the data
 Census.Data <-read.csv("practical_data.csv")
@@ -132,7 +132,8 @@ plot(H.fit,
 )
 
 #add borders around the 4 clusters
-rect.hclust(H.fit, k = 4, border = c("red", "blue", "green", "orange"))
+cluster_colors <- c("1" = "red", "2" = "blue", "3" = "green", "4" = "orange")
+rect.hclust(H.fit, k = 4, border = cluster_colors)
 
 #association of each record with the groupings created
 hgroups <- cutree(H.fit, k=4)
@@ -160,8 +161,6 @@ OA.Census <- merge(Output.Areas, Census.Data.cluster, by.x="OA11CD", by.y="OA")
 st_crs(OA.Census) <- 27700
 
 #Spatial distribution of K-means clusters in the study area.
-cluster_colors <- c("1" = "red", "2" = "blue", "3" = "green", "4" = "orange")
-
 OA.Census$kmeansgroups <- factor(OA.Census$kmeansgroups, levels = c("1","2","3"))
 OA.Census$hgroups <- factor(OA.Census$hgroups, levels = c("1","2","3","4"))
 
